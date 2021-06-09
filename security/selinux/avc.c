@@ -913,7 +913,9 @@ static int avc_update_node(struct selinux_avc *avc,
 	if (orig->ae.xp_node) {
 		rc = avc_xperms_populate(node, orig->ae.xp_node);
 		if (rc) {
-			avc_node_kill(avc, node);
+
+			avc_node_kill(node);
+
 			goto out_unlock;
 		}
 	}
@@ -1035,8 +1037,64 @@ static noinline int avc_denied(struct selinux_state *state,
 	if (flags & AVC_STRICT)
 		return -EACCES;
 
-	if (enforcing_enabled(state) &&
-	    !(avd->flags & AVD_FLAGS_PERMISSIVE))
+
+// [ SEC_SELINUX_PORTING_COMMON
+#ifdef SEC_SELINUX_DEBUG
+
+        /* SEC_SELINUX : denied && auditallow means "never happen" at current sepolicy. Valid Enforcing denial only. */
+	if ( (requested & avd->auditallow) && selinux_enforcing && !(avd->flags & AVD_FLAGS_PERMISSIVE) )  {
+
+		char *scontext, *tcontext;
+		const char **perms;
+		int i, perm;
+		int rc1, rc2;
+		u32 scontext_len, tcontext_len;
+
+		perms = secclass_map[tclass-1].perms;
+		i = 0;
+		perm = 1;
+		while (i < (sizeof(requested) * 8)) {
+			if ((perm & requested) && perms[i])
+				break;
+			i++;
+			perm <<= 1;
+		}
+
+		rc1 = security_sid_to_context(ssid, &scontext, &scontext_len);
+		rc2 = security_sid_to_context(tsid, &tcontext, &tcontext_len);
+
+		if (rc1 || rc2) {
+			printk(KERN_ERR "SELinux DEBUG : %s: ssid=%d tsid=%d tclass=%s perm=%s requested(%d) auditallow(%d)\n",
+		       __func__, ssid, tsid, secclass_map[tclass-1].name, perms[i], requested, avd->auditallow);
+		}
+		else {
+			printk(KERN_ERR "SELinux DEBUG : %s: scontext=%s tcontext=%s tclass=%s perm=%s requested(%d) auditallow(%d)\n",
+		       __func__, scontext, tcontext, secclass_map[tclass-1].name, perms[i], requested, avd->auditallow);
+		}
+
+		/* print call stack */
+		printk(KERN_ERR "SELinux DEBUG : FATAL denial and start dump_stack\n");
+		dump_stack();
+
+		/* enforcing : SIGABRT and take debuggerd log */
+		if (selinux_enforcing && !(avd->flags & AVD_FLAGS_PERMISSIVE)) {
+			printk(KERN_ERR "SELinux DEBUG : send SIGABRT to current tsk\n");
+			send_sig(SIGABRT, current, 2);
+		}
+
+		if (!rc1) kfree(scontext);
+		if (!rc2) kfree(tcontext);
+
+	}
+#endif
+
+#ifdef CONFIG_SECURITY_SELINUX_ALWAYS_ENFORCE
+	if (!(avd->flags & AVD_FLAGS_PERMISSIVE))
+#else
+	if (selinux_enforcing && !(avd->flags & AVD_FLAGS_PERMISSIVE))
+#endif
+// ] SEC_SELINUX_PORTING_COMMON
+
 		return -EACCES;
 
 	avc_update_node(state->avc, AVC_CALLBACK_GRANT, requested, driver,
